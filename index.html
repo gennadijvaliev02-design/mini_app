@@ -526,8 +526,8 @@
                     <input type="number" class="form-input" id="prod-price" required placeholder="150">
                 </div>
                 <div class="form-group">
-                    <label class="form-label">Эмодзи или URL фото</label>
-                    <input type="text" class="form-input" id="prod-image" placeholder="🍎 или https://...">
+                    <label class="form-label">URL фото</label>
+                    <input type="url" class="form-input" id="prod-image" placeholder="https://...">
                 </div>
                 <div class="form-group">
                     <label class="form-label">Описание</label>
@@ -707,9 +707,10 @@
             }
             
             container.innerHTML = state.products.map(p => {
-                const isUrl = p.image_url && p.image_url.startsWith('http');
-                const iconContent = isUrl ? '' : (p.image_url || '🌾');
-                const bgStyle = isUrl ? `style="background-image: url('${p.image_url}')"` : '';
+                const imageUrl = (p.image_url || '').trim();
+                const isUrl = /^https?:\/\//i.test(imageUrl);
+                const iconContent = isUrl ? '' : (p.emoji || '🌾');
+                const bgStyle = isUrl ? `style="background-image: url('${escapeHtml(imageUrl)}')"` : '';
                 
                 return `
                 <div class="item-card">
@@ -795,7 +796,7 @@
             const payload = {
                 name: document.getElementById('prod-name').value,
                 price: document.getElementById('prod-price').value,
-                image_url: document.getElementById('prod-image').value,
+                image_url: document.getElementById('prod-image').value.trim(),
                 description: document.getElementById('prod-desc').value
             };
             
