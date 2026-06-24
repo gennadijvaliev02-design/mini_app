@@ -384,6 +384,52 @@
             border-color: var(--tg-button);
             box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.1);
         }
+        .file-input {
+            display: none;
+        }
+        .file-button {
+            width: 100%;
+            padding: 12px 16px;
+            border-radius: var(--radius-sm);
+            border: 1px solid rgba(0,0,0,0.1);
+            background: var(--tg-secondary-bg);
+            color: var(--tg-text);
+            font-size: 15px;
+            font-weight: 600;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 8px;
+            transition: var(--transition);
+        }
+        .file-button:active {
+            transform: scale(0.98);
+        }
+        .image-preview {
+            width: 88px;
+            height: 88px;
+            border-radius: var(--radius-sm);
+            background: var(--tg-secondary-bg);
+            background-size: cover;
+            background-position: center;
+            display: none;
+            margin-top: 10px;
+            border: 1px solid rgba(0,0,0,0.08);
+        }
+        .image-preview.active {
+            display: block;
+        }
+        .upload-status {
+            min-height: 18px;
+            margin-top: 8px;
+            color: var(--tg-hint);
+            font-size: 12px;
+            line-height: 1.4;
+        }
+        .upload-status.error {
+            color: #ef4444;
+        }
         .form-textarea {
             resize: vertical;
             min-height: 100px;
@@ -526,8 +572,12 @@
                     <input type="number" class="form-input" id="prod-price" required placeholder="150">
                 </div>
                 <div class="form-group">
-                    <label class="form-label">URL фото</label>
-                    <input type="url" class="form-input" id="prod-image" placeholder="https://...">
+                    <label class="form-label">Фото</label>
+                    <input type="hidden" id="prod-image">
+                    <input type="file" class="file-input" id="prod-image-file" accept="image/*" onchange="handleProductImageChange(event)">
+                    <button type="button" class="file-button" onclick="document.getElementById('prod-image-file').click()">📷 Выбрать фото</button>
+                    <div id="prod-image-preview" class="image-preview"></div>
+                    <div id="prod-upload-status" class="upload-status"></div>
                 </div>
                 <div class="form-group">
                     <label class="form-label">Описание</label>
@@ -575,7 +625,9 @@
         let state = {
             products: [],
             coming: [],
-            orders: []
+            orders: [],
+            cloudinaryConfig: null,
+            imageUploading: false
         };
 
         // Инициализация
@@ -632,13 +684,21 @@
                 document.getElementById('prod-price').value = data ? data.price : '';
                 document.getElementById('prod-image').value = data ? (data.image_url || '') : '';
                 document.getElementById('prod-desc').value = data ? (data.description || '') : '';
+                document.getElementById('prod-image-file').value = '';
+                setProductImagePreview(data ? (data.image_url || '') : '');
+                setUploadStatus('');
             }
         }
 
         function closeModal(type) {
             haptic('light');
             document.getElementById(`modal-${type}`).classList.remove('active');
-            if (type === 'product') document.getElementById('form-product').reset();
+            if (type === 'product') {
+                document.getElementById('form-product').reset();
+                setProductImagePreview('');
+                setUploadStatus('');
+                state.imageUploading = false;
+            }
             if (type === 'coming') document.getElementById('form-coming').reset();
         }
 
@@ -656,6 +716,102 @@
             const res = await fetch(`${API_BASE}${endpoint}`, config);
             if (!res.ok) throw new Error('API Error');
             return res.json();
+        }
+
+        async function getCloudinaryConfig() {
+            if (state.cloudinaryConfig) return state.cloudinaryConfig;
+            const config = await apiRequest('/api/admin/cloudinary-config');
+            if (!config.cloud_name || !config.upload_preset) {
+                throw new Error('Cloudinary config is incomplete');
+            }
+            state.cloudinaryConfig = config;
+            return config;
+        }
+
+        function setProductImagePreview(url) {
+            const preview = document.getElementById('prod-image-preview');
+            const isUrl = /^https?:\/\//i.test((url || '').trim());
+            preview.classList.toggle('active', isUrl);
+            preview.style.backgroundImage = isUrl ? `url('${url.replace(/'/g, "%27")}')` : '';
+        }
+
+        function setUploadStatus(text, isError = false) {
+            const status = document.getElementById('prod-upload-status');
+            status.textContent = text;
+            status.classList.toggle('error', isError);
+        }
+
+        function readImage(file) {
+            return new Promise((resolve, reject) => {
+                const img = new Image();
+                img.onload = () => resolve(img);
+                img.onerror = reject;
+                img.src = URL.createObjectURL(file);
+            });
+        }
+
+        async function compressImage(file, maxWidth = 800, quality = 0.82) {
+            const img = await readImage(file);
+            const scale = Math.min(1, maxWidth / img.width);
+            const width = Math.max(1, Math.round(img.width * scale));
+            const height = Math.max(1, Math.round(img.height * scale));
+            const canvas = document.createElement('canvas');
+            canvas.width = width;
+            canvas.height = height;
+            const ctx = canvas.getContext('2d');
+            ctx.drawImage(img, 0, 0, width, height);
+            URL.revokeObjectURL(img.src);
+
+            return new Promise((resolve, reject) => {
+                canvas.toBlob(blob => {
+                    if (!blob) {
+                        reject(new Error('Image compression failed'));
+                        return;
+                    }
+                    resolve(new File([blob], 'product-photo.jpg', { type: 'image/jpeg' }));
+                }, 'image/jpeg', quality);
+            });
+        }
+
+        async function uploadProductImage(file) {
+            const config = await getCloudinaryConfig();
+            const compressed = await compressImage(file);
+            const data = new FormData();
+            data.append('file', compressed);
+            data.append('upload_preset', config.upload_preset);
+            if (config.folder) data.append('folder', config.folder);
+
+            const res = await fetch(`https://api.cloudinary.com/v1_1/${encodeURIComponent(config.cloud_name)}/image/upload`, {
+                method: 'POST',
+                body: data
+            });
+            const result = await res.json();
+            if (!res.ok || !result.secure_url) {
+                throw new Error(result.error?.message || 'Cloudinary upload failed');
+            }
+            return result.secure_url;
+        }
+
+        async function handleProductImageChange(event) {
+            const file = event.target.files?.[0];
+            if (!file) return;
+
+            state.imageUploading = true;
+            document.getElementById('prod-image').value = '';
+            setProductImagePreview('');
+            setUploadStatus('Загрузка фото...');
+
+            try {
+                const url = await uploadProductImage(file);
+                document.getElementById('prod-image').value = url;
+                setProductImagePreview(url);
+                setUploadStatus('Фото загружено');
+            } catch (err) {
+                console.error(err);
+                setUploadStatus('Фото не загрузилось, будет использована emoji-заглушка', true);
+            } finally {
+                state.imageUploading = false;
+            }
         }
 
         async function loadData() {
@@ -791,6 +947,11 @@
         async function handleProductSubmit(e) {
             e.preventDefault();
             haptic('medium');
+
+            if (state.imageUploading) {
+                tg.showAlert('Дождитесь окончания загрузки фото');
+                return;
+            }
             
             const id = document.getElementById('prod-id').value;
             const payload = {
